@@ -321,7 +321,43 @@ app.post('/api/truetag/refresh-token', async (req, res) => {
     res.status(401).json({ error: `Invalid or expired refresh token: ${error.message}` });
   }
 });
+// Update profile endpoint
+app.post('/api/truetag/profile', authMiddleware, async (req, res) => {
+  const { name, email, address, image_url } = req.body;
+  const phoneNumber = req.user.phoneNumber;
 
+  if (!name && !email && !address && !image_url) {
+    return res.status(400).json({ error: 'At least one field (name, email, address, image_url) is required' });
+  }
+
+  try {
+    const userQuery = await db.collection('truetag_users')
+      .where('phone_number', '==', phoneNumber)
+      .limit(1)
+      .get();
+
+    if (userQuery.empty) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userDoc = userQuery.docs[0];
+    const updateData = {
+      updated_at: Date.now(),
+    };
+    if (name) updateData.name = name;
+    if (email) updateData.email = email;
+    if (address) updateData.address = address;
+    if (image_url) updateData.image_url = image_url;
+
+    await userDoc.ref.update(updateData);
+
+    logger.info({ phoneNumber }, 'Profile updated');
+    res.status(200).json({ message: 'Profile updated successfully' });
+  } catch (error) {
+    logger.error({ err: error }, 'Profile update failure');
+    res.status(500).json({ error: `Failed to update profile: ${error.message}` });
+  }
+});
 // Logout endpoint
 app.post('/api/truetag/logout', async (req, res) => {
   const { phoneNumber } = req.body;
