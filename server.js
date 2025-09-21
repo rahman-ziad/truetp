@@ -32,60 +32,16 @@ app.use(globalLimiter);
 
 // Initialize Firebase Admin SDK with flexible credential loading
 function loadFirebaseCredentials() {
-  const { FIREBASE_CREDENTIALS, FIREBASE_CREDENTIALS_BASE64, FIREBASE_CREDENTIALS_FILE } = process.env;
-  let raw = FIREBASE_CREDENTIALS;
-  if (!raw && FIREBASE_CREDENTIALS_BASE64) {
-    try { raw = Buffer.from(FIREBASE_CREDENTIALS_BASE64, 'base64').toString('utf-8'); logger.info('Loaded Firebase credentials from BASE64 env'); } catch (e) { logger.warn('Failed to decode FIREBASE_CREDENTIALS_BASE64'); }
-  }
-  if (!raw && FIREBASE_CREDENTIALS_FILE) {
-    try { raw = require('fs').readFileSync(FIREBASE_CREDENTIALS_FILE, 'utf-8'); logger.info({ file: FIREBASE_CREDENTIALS_FILE }, 'Loaded Firebase credentials from file'); } catch (e) { logger.warn({ file: FIREBASE_CREDENTIALS_FILE }, 'Failed to read FIREBASE_CREDENTIALS_FILE'); }
-  }
-  // Fallback: individual field env vars (better for platforms like Render)
-  if (!raw) {
-    const projectId = process.env.FIREBASE_PROJECT_ID;
-    const privateKeyId = process.env.FIREBASE_PRIVATE_KEY_ID;
-    let privateKey = process.env.FIREBASE_PRIVATE_KEY;
-    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-    const clientId = process.env.FIREBASE_CLIENT_ID;
-    if (projectId && privateKeyId && privateKey && clientEmail) {
-      // Support escaped \n in env var
-      privateKey = privateKey.replace(/\\n/g, '\n');
-      const credentialObj = {
-        type: 'service_account',
-        project_id: projectId,
-        private_key_id: privateKeyId,
-        private_key: privateKey,
-        client_email: clientEmail,
-        client_id: clientId || undefined,
-        auth_uri: 'https://accounts.google.com/o/oauth2/auth',
-        token_uri: 'https://oauth2.googleapis.com/token',
-        auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
-        client_x509_cert_url: `https://www.googleapis.com/robot/v1/metadata/x509/${encodeURIComponent(clientEmail)}`,
-        universe_domain: 'googleapis.com'
-      };
-      return credentialObj;
-    }
-  }
-  if (!raw) {
-    throw new Error('No Firebase credentials found. Set one of FIREBASE_CREDENTIALS, FIREBASE_CREDENTIALS_BASE64, FIREBASE_CREDENTIALS_FILE');
-  }
-  if (raw.trim() === '{') {
-    throw new Error('FIREBASE_CREDENTIALS appears to contain only an opening brace. If you tried to paste multi-line JSON directly into .env it will break. Use FIREBASE_CREDENTIALS_BASE64 or FIREBASE_CREDENTIALS_FILE instead.');
-  }
   try {
-    return JSON.parse(raw);
-  } catch (e) {
-    throw new Error(`Failed to parse Firebase credentials JSON: ${e.message}`);
-  }
-}
-
-try {
-  const credentials = loadFirebaseCredentials();
-  admin.initializeApp({ credential: admin.credential.cert(credentials) });
+  const credentials = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+  admin.initializeApp({
+    credential: admin.credential.cert(credentials),
+  });
 } catch (error) {
-  console.error('Error initializing Firebase:', error.message);
+  console.error('Error initializing Firebase:', error.message, error.stack);
   process.exit(1);
-}
+}}
+loadFirebaseCredentials();
 
 // MiMSMS configuration
 const SMS_API_URL = 'https://api.mimsms.com/api/SmsSending/SMS';
