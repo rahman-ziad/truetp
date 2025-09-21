@@ -61,8 +61,8 @@ const PHONE_OTP_MAX_PER_WINDOW = parseInt(process.env.PHONE_OTP_MAX_PER_WINDOW |
 
 // Firestore collection
 const db = admin.firestore();
-const otpCollection = db.collection('jachai_otps');
-const tokenCollection = db.collection('jachai_tokens');
+const otpCollection = db.collection('truetag_otps');
+const tokenCollection = db.collection('truetag_tokens');
 
 // Helpers
 function generateOTP() {
@@ -111,7 +111,7 @@ function allowPhoneOtpRequest(phoneNumber) {
 }
 
 // Send OTP endpoint
-app.post('/api/jachai/send-otp', async (req, res) => {
+app.post('/api/truetag/send-otp', async (req, res) => {
   const { phoneNumber } = req.body;
 
   if (!phoneNumber) {
@@ -156,7 +156,7 @@ app.post('/api/jachai/send-otp', async (req, res) => {
         CampaignId: 'null',
         SenderName: SMS_SENDER_NAME,
         TransactionType: SMS_TRANSACTION_TYPE,
-        Message: `Welcome to jachai. Your OTP is ${otp}`,
+  Message: `welcome to RR Kabel. your otp is ${otp}`,
       }),
     });
 
@@ -173,7 +173,7 @@ app.post('/api/jachai/send-otp', async (req, res) => {
 });
 
 // Verify OTP and login endpoint
-app.post('/api/jachai/verify-otp', async (req, res) => {
+app.post('/api/truetag/verify-otp', async (req, res) => {
   const { phoneNumber, otp, sessionId } = req.body;
 
   if (!phoneNumber || !otp || !sessionId) {
@@ -219,28 +219,30 @@ app.post('/api/jachai/verify-otp', async (req, res) => {
       createdAt: Date.now(),
     });
 
-    // Check if user profile exists
-    const userQuery = await db.collection('jachai_users')
+    // Ensure user profile exists (minimal fields)
+  const userQuery = await db.collection('truetag_users')
       .where('phone_number', '==', phoneNumber)
       .limit(1)
       .get();
 
-    let isProfileComplete = false;
+    let profile;
     if (userQuery.empty) {
-      await db.collection('jachai_users').add({
+  const docRef = await db.collection('truetag_users').add({
         phone_number: phoneNumber,
         name: '',
+        email: '',
         image_url: '',
-        editedby_user: false,
+        address: '',
         created_at: Date.now(),
       });
+      profile = { name: '', email: '', image_url: '', address: '' };
     } else {
       const userData = userQuery.docs[0].data();
-      isProfileComplete = userData.editedby_user === true;
+      profile = { name: userData.name || '', email: userData.email || '', image_url: userData.image_url || '', address: userData.address || '' };
     }
 
-    logger.info({ phoneNumber }, 'OTP verified, tokens issued');
-    res.status(200).json({ jwt: token, refreshToken, isProfileComplete });
+  logger.info({ phoneNumber }, 'OTP verified, tokens issued (truetag)');
+    res.status(200).json({ jwt: token, refreshToken, profile });
   } catch (error) {
     logger.error({ err: error }, 'Verify OTP failure');
     res.status(500).json({ error: `OTP verification failed: ${error.message}` });
@@ -270,23 +272,23 @@ async function authMiddleware(req, res, next) {
 }
 
 // Protected profile endpoint
-app.get('/api/jachai/profile', authMiddleware, async (req, res) => {
+app.get('/api/truetag/profile', authMiddleware, async (req, res) => {
   try {
     const phoneNumber = req.user.phoneNumber;
-    const userSnap = await db.collection('jachai_users').where('phone_number', '==', phoneNumber).limit(1).get();
+  const userSnap = await db.collection('truetag_users').where('phone_number', '==', phoneNumber).limit(1).get();
     if (userSnap.empty) {
       return res.status(404).json({ error: 'Profile not found' });
     }
     const doc = userSnap.docs[0];
     const data = doc.data();
-    res.status(200).json({ profile: { phone_number: data.phone_number, name: data.name, image_url: data.image_url, editedby_user: data.editedby_user } });
+    res.status(200).json({ profile: { name: data.name || '', email: data.email || '', image_url: data.image_url || '', address: data.address || '' } });
   } catch (e) {
     res.status(500).json({ error: 'Failed to fetch profile' });
   }
 });
 
 // Refresh token endpoint
-app.post('/api/jachai/refresh-token', async (req, res) => {
+app.post('/api/truetag/refresh-token', async (req, res) => {
   const { refreshToken, phoneNumber } = req.body;
 
   if (!refreshToken || !phoneNumber) {
@@ -321,7 +323,7 @@ app.post('/api/jachai/refresh-token', async (req, res) => {
 });
 
 // Logout endpoint
-app.post('/api/jachai/logout', async (req, res) => {
+app.post('/api/truetag/logout', async (req, res) => {
   const { phoneNumber } = req.body;
 
   if (!phoneNumber) {
@@ -346,11 +348,11 @@ app.use((err, req, res, next) => {
 });
 
 // Health check endpoint
-app.get('/jachai/health', (req, res) => {
+app.get('/truetag/health', (req, res) => {
   res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Jachai server running on port ${PORT}`);
+  console.log(`Truetag server running on port ${PORT}`);
 });

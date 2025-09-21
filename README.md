@@ -1,4 +1,4 @@
-# Jachai OTP Auth Backend
+# Truetag OTP Auth Backend
 
 Secure OTP-based authentication service built with **Node.js (Express)**, **Firebase Admin (Firestore)**, and **hashed JWT + refresh tokens**. Includes endpoints to send OTP, verify/login, refresh JWT, logout, a protected profile endpoint, and a health check. Enhanced with rate limiting, brute-force protection, and security headers.
 
@@ -7,7 +7,7 @@ Secure OTP-based authentication service built with **Node.js (Express)**, **Fire
 - Verify OTP and issue JWT + refresh token (both hashed before storage)
 - Refresh access token with hashed refresh token validation
 - Logout (revokes stored hashes)
-- Protected profile endpoint (`/api/jachai/profile`) with hashed JWT verification
+- Protected profile endpoint (`/api/truetag/profile`) with hashed JWT verification
 - Firestore persistence (separate collections for OTPs, tokens, and users)
 - Rate limiting (global + per-phone OTP request limiting)
 - Brute-force OTP attempt tracking & locking
@@ -27,19 +27,19 @@ Secure OTP-based authentication service built with **Node.js (Express)**, **Fire
 ## Endpoints
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/jachai/send-otp` | Request an OTP (returns `sessionId`) |
-| POST | `/api/jachai/verify-otp` | Verify OTP and receive `jwt`, `refreshToken`, `isProfileComplete` |
-| POST | `/api/jachai/refresh-token` | Exchange valid refresh token for new JWT |
-| POST | `/api/jachai/logout` | Revoke tokens for a phone number |
-| GET  | `/api/jachai/profile` | Fetch authenticated user profile |
-| GET  | `/jachai/health` | Health check |
+| POST | `/api/truetag/send-otp` | Request an OTP (returns `sessionId`) |
+| POST | `/api/truetag/verify-otp` | Verify OTP and receive `jwt`, `refreshToken`, `profile` |
+| POST | `/api/truetag/refresh-token` | Exchange valid refresh token for new JWT |
+| POST | `/api/truetag/logout` | Revoke tokens for a phone number |
+| GET  | `/api/truetag/profile` | Fetch authenticated user profile |
+| GET  | `/truetag/health` | Health check |
 
 ## Data Collections (Firestore)
 | Collection | Purpose |
 |------------|---------|
-| `jachai_otps` | Temporary OTP docs (session-scoped) |
-| `jachai_tokens` | Stores hashed `tokenHash` & `refreshTokenHash` per phone number |
-| `jachai_users` | Basic user profile scaffold |
+| `truetag_otps` | Temporary OTP docs (session-scoped) |
+| `truetag_tokens` | Stores hashed `tokenHash` & `refreshTokenHash` per phone number |
+| `truetag_users` | Basic user profile scaffold |
 
 ## Security Notes
 - Raw JWT and refresh token are only sent once in response; only hashes are stored server-side (`bcrypt`).
@@ -118,30 +118,30 @@ npm start
 ## Example cURL Usage
 Request OTP:
 ```bash
-curl -X POST http://localhost:3001/api/jachai/send-otp \
+curl -X POST http://localhost:3001/api/truetag/send-otp \
 	-H 'Content-Type: application/json' \
 	-d '{"phoneNumber":"+8801XXXXXXXXX"}'
 ```
 Verify OTP:
 ```bash
-curl -X POST http://localhost:3001/api/jachai/verify-otp \
+curl -X POST http://localhost:3001/api/truetag/verify-otp \
 	-H 'Content-Type: application/json' \
 	-d '{"phoneNumber":"+8801XXXXXXXXX","otp":"123456","sessionId":"<sessionIdReturned>"}'
 ```
 Refresh token:
 ```bash
-curl -X POST http://localhost:3001/api/jachai/refresh-token \
+curl -X POST http://localhost:3001/api/truetag/refresh-token \
 	-H 'Content-Type: application/json' \
 	-d '{"phoneNumber":"+8801XXXXXXXXX","refreshToken":"<refreshToken>"}'
 ```
 Get profile (authenticated):
 ```bash
-curl -X GET http://localhost:3001/api/jachai/profile \
+curl -X GET http://localhost:3001/api/truetag/profile \
   -H 'Authorization: Bearer <jwt>'
 ```
 Logout:
 ```bash
-curl -X POST http://localhost:3001/api/jachai/logout \
+curl -X POST http://localhost:3001/api/truetag/logout \
 	-H 'Content-Type: application/json' \
 	-d '{"phoneNumber":"+8801XXXXXXXXX"}'
 ```
@@ -185,4 +185,4 @@ Set env vars via the platform dashboard / CLI.
 Proprietary / Internal (adjust as needed).
 
 ---
-Generated initial scaffold for Jachai OTP auth backend.
+Generated scaffold for Truetag OTP auth backend. SMS format: "welcome to RR Kabel. your otp is XXXXXX".
