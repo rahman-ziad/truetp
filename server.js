@@ -105,20 +105,16 @@ async function cleanupExpiredOtps(limit = 25) {
 // Send OTP endpoint
 app.post('/api/truetag/send-otp', otpLimiter, async (req, res) => {
   const { phoneNumber } = req.body;
-
   if (!phoneNumber) {
     return res.status(400).json({ error: 'Phone number required' });
   }
-
   if (!validatePhoneNumber(phoneNumber)) {
     return res.status(400).json({ error: 'Invalid phone number format' });
   }
-
   const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
   const otp = generateOTP();
   const sessionId = uuidv4();
   const expiresAt = Date.now() + OTP_TTL_MS;
-
   try {
     await otpCollection.doc(sessionId).set({
       phoneNumber,
@@ -128,9 +124,7 @@ app.post('/api/truetag/send-otp', otpLimiter, async (req, res) => {
       attempts: 0,
       locked: false,
     });
-
     cleanupExpiredOtps().catch(() => {});
-
     const response = await fetch(SMS_API_URL, {
       method: 'POST',
       headers: {
@@ -147,12 +141,10 @@ app.post('/api/truetag/send-otp', otpLimiter, async (req, res) => {
         Message: `Welcome to RR Kabel. Your OTP is ${otp}`,
       }),
     });
-
     const result = await response.json();
     if (!response.ok || result.statusCode !== '200') {
       return res.status(500).json({ error: `Failed to send OTP: ${result.responseResult || result.message || 'SMS service unavailable'}` });
     }
-
     res.status(200).json({ sessionId, expiresInMs: OTP_TTL_MS });
   } catch (error) {
     logger.error({ err: error }, 'Send OTP failure');
@@ -163,17 +155,14 @@ app.post('/api/truetag/send-otp', otpLimiter, async (req, res) => {
 // Verify OTP and login endpoint
 app.post('/api/truetag/verify-otp', otpLimiter, async (req, res) => {
   const { phoneNumber, otp, sessionId } = req.body;
-
   if (!phoneNumber || !otp || !sessionId) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
-
   try {
     const otpDoc = await otpCollection.doc(sessionId).get();
     if (!otpDoc.exists) {
       return res.status(400).json({ error: 'Invalid session ID' });
     }
-
     const data = otpDoc.data();
     if (data.locked) {
       return res.status(400).json({ error: 'OTP locked due to too many attempts' });
@@ -188,32 +177,28 @@ app.post('/api/truetag/verify-otp', otpLimiter, async (req, res) => {
       await otpCollection.doc(sessionId).update({ attempts: newAttempts, locked });
       return res.status(400).json({ error: 'Invalid or expired OTP' });
     }
-
     // OTP verified, delete OTP doc
     await otpCollection.doc(sessionId).delete();
     cleanupExpiredOtps().catch(() => {});
-
     // Generate JWT and refresh token
     const jwtPayload = { phoneNumber };
     const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '30d' });
     const refreshToken = jwt.sign(jwtPayload, REFRESH_TOKEN_SECRET, { expiresIn: '90d' });
-
     // Hash tokens before storing
     const tokenHash = await bcrypt.hash(token, HASH_SALT_ROUNDS);
     const refreshTokenHash = await bcrypt.hash(refreshToken, HASH_SALT_ROUNDS);
-
-    // Store tokens
-    await tokenCollection.doc(phoneNumber).set({
+    // Store tokens with normalized phone as ID
+    const normalizedPhone = normalizePhoneNumber(phoneNumber);
+    await tokenCollection.doc(normalizedPhone).set({
       tokenHash,
       refreshTokenHash,
       createdAt: Date.now(),
     });
-
-    // Ensure user profile exists
-    const userQuery = await userCollection.where('phone_number', '==', phoneNumber).limit(1).get();
-    let profile;
-    if (userQuery.empty) {
-      const docRef = await userCollection.add({
+    // Ensure user profile exists with normalized phone as ID
+    const userDocRef = userCollection.doc(normalizedPhone);
+    const userDoc = await userDocRef.get();
+    if (!userDoc.exists) {
+      await userDocRef.set({
         phone_number: phoneNumber,
         name: '',
         email: '',
@@ -221,27 +206,19 @@ app.post('/api/truetag/verify-otp', otpLimiter, async (req, res) => {
         address: '',
         created_at: Date.now(),
       });
-      profile = { name: '', email: '', image_url: '', address: '' };
-    } else {
-      const userData = userQuery.docs[0].data();
-      profile = { name: userData.name || '', email: userData.email || '', image_url: userData.image_url || '', address: userData.address || '' };
     }
-
     // Create or update Firebase Auth user
-    const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
-    await admin.auth().getUser(normalizedPhoneNumber).catch(async (error) => {
+    await admin.auth().getUser(normalizedPhone).catch(async (error) => {
       if (error.code === 'auth/user-not-found') {
-        await admin.auth().createUser({ uid: normalizedPhoneNumber });
+        await admin.auth().createUser({ uid: normalizedPhone });
       } else {
         throw error;
       }
     });
-
     // Generate Firebase custom token
-    const firebaseToken = await admin.auth().createCustomToken(normalizedPhoneNumber);
-
+    const firebaseToken = await admin.auth().createCustomToken(normalizedPhone);
     logger.info({ phoneNumber }, 'OTP verified, tokens issued');
-    res.status(200).json({ jwt: token, refreshToken, firebaseToken, profile });
+    res.status(200).json({ jwt: token, refreshToken, firebaseToken, profile: { name: '', email: '', image_url: '', address: '' } });
   } catch (error) {
     logger.error({ err: error }, 'Verify OTP failure');
     res.status(500).json({ error: `OTP verification failed: ${error.message}` });
@@ -251,19 +228,15 @@ app.post('/api/truetag/verify-otp', otpLimiter, async (req, res) => {
 // Firebase custom token endpoint
 app.post('/api/truetag/firebase-token', async (req, res) => {
   const { phoneNumber } = req.body;
-
   if (!phoneNumber) {
     return res.status(400).json({ error: 'Phone number required' });
   }
-
   if (!validatePhoneNumber(phoneNumber)) {
     return res.status(400).json({ error: 'Invalid phone number format' });
   }
-
   try {
     const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
     const uid = normalizedPhoneNumber;
-
     // Ensure user exists in Firebase Auth
     await admin.auth().getUser(uid).catch(async (error) => {
       if (error.code === 'auth/user-not-found') {
@@ -272,7 +245,6 @@ app.post('/api/truetag/firebase-token', async (req, res) => {
         throw error;
       }
     });
-
     // Generate custom token
     const firebaseToken = await admin.auth().createCustomToken(uid);
     logger.info({ phoneNumber }, 'Firebase custom token generated');
@@ -293,7 +265,8 @@ async function authMiddleware(req, res, next) {
     }
     const token = parts[1];
     const decoded = jwt.verify(token, JWT_SECRET);
-    const tokenDoc = await tokenCollection.doc(decoded.phoneNumber).get();
+    const normalizedPhone = normalizePhoneNumber(decoded.phoneNumber);
+    const tokenDoc = await tokenCollection.doc(normalizedPhone).get();
     if (!tokenDoc.exists) return res.status(401).json({ error: 'Token revoked' });
     const { tokenHash } = tokenDoc.data();
     const ok = await bcrypt.compare(token, tokenHash);
@@ -306,16 +279,16 @@ async function authMiddleware(req, res, next) {
   }
 }
 
-// Protected profile endpoint (fixed duplicate)
+// Protected profile endpoint
 app.get('/api/truetag/profile', authMiddleware, async (req, res) => {
   try {
     const phoneNumber = req.user.phoneNumber;
-    const userSnap = await userCollection.where('phone_number', '==', phoneNumber).limit(1).get();
-    if (userSnap.empty) {
+    const normalizedPhone = normalizePhoneNumber(phoneNumber);
+    const userDoc = await userCollection.doc(normalizedPhone).get();
+    if (!userDoc.exists) {
       return res.status(404).json({ error: 'Profile not found' });
     }
-    const doc = userSnap.docs[0];
-    const data = doc.data();
+    const data = userDoc.data();
     res.status(200).json({
       profile: {
         name: data.name || '',
@@ -334,32 +307,27 @@ app.get('/api/truetag/profile', authMiddleware, async (req, res) => {
 // Refresh token endpoint
 app.post('/api/truetag/refresh-token', async (req, res) => {
   const { refreshToken, phoneNumber } = req.body;
-
   if (!refreshToken || !phoneNumber) {
     return res.status(400).json({ error: 'Refresh token and phone number required' });
   }
-
   try {
     const decoded = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET);
     if (decoded.phoneNumber !== phoneNumber) {
       return res.status(401).json({ error: 'Invalid refresh token' });
     }
-
-    const tokenDoc = await tokenCollection.doc(phoneNumber).get();
+    const normalizedPhone = normalizePhoneNumber(phoneNumber);
+    const tokenDoc = await tokenCollection.doc(normalizedPhone).get();
     if (!tokenDoc.exists) {
       return res.status(401).json({ error: 'Refresh token not found' });
     }
-
     const { refreshTokenHash } = tokenDoc.data();
     const isMatch = await bcrypt.compare(refreshToken, refreshTokenHash);
     if (!isMatch) {
       return res.status(401).json({ error: 'Invalid refresh token' });
     }
-
     const newToken = jwt.sign({ phoneNumber }, JWT_SECRET, { expiresIn: '30d' });
     const newTokenHash = await bcrypt.hash(newToken, HASH_SALT_ROUNDS);
-    await tokenCollection.doc(phoneNumber).update({ tokenHash: newTokenHash });
-
+    await tokenCollection.doc(normalizedPhone).update({ tokenHash: newTokenHash });
     res.status(200).json({ jwt: newToken });
   } catch (error) {
     logger.error({ err: error }, 'Refresh token failure');
@@ -370,19 +338,18 @@ app.post('/api/truetag/refresh-token', async (req, res) => {
 // Logout endpoint
 app.post('/api/truetag/logout', async (req, res) => {
   const { phoneNumber } = req.body;
-
   if (!phoneNumber) {
     return res.status(400).json({ error: 'Phone number is required' });
   }
-
   try {
-    const tokenDoc = await tokenCollection.doc(phoneNumber).get();
+    const normalizedPhone = normalizePhoneNumber(phoneNumber);
+    const tokenDoc = await tokenCollection.doc(normalizedPhone).get();
     if (tokenDoc.exists) {
-      await tokenCollection.doc(phoneNumber).delete();
+      await tokenCollection.doc(normalizedPhone).delete();
     }
     res.status(200).json({ message: 'Logged out successfully' });
   } catch (error) {
-    logger.error({ err: e }, 'Logout failure');
+    logger.error({ err: error }, 'Logout failure');
     res.status(500).json({ error: `Failed to log out: ${error.message}` });
   }
 });
