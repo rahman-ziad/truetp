@@ -15,13 +15,13 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 // Security & parsing middleware
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({
-  origin: '*', // TODO: restrict in production
+  origin: process.env.CORS_ORIGIN || 'https://your-flutter-app-domain.com', // Restrict to app domain
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 app.use(express.json({ limit: '10kb' }));
 
-// Basic IP rate limiter (global)
+// Global rate limiter
 const globalLimiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
   max: parseInt(process.env.RATE_LIMIT_MAX || '120', 10),
@@ -30,18 +30,34 @@ const globalLimiter = rateLimit({
 });
 app.use(globalLimiter);
 
-// Initialize Firebase Admin SDK with flexible credential loading
+// Endpoint-specific rate limiter for OTP endpoints
+const otpLimiter = rateLimit({
+  windowMs: parseInt(process.env.PHONE_OTP_WINDOW_MS || '60000', 10),
+  max: parseInt(process.env.PHONE_OTP_MAX_PER_WINDOW || '3', 10),
+  keyGenerator: (req) => req.body.phoneNumber || req.ip,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Initialize Firebase Admin SDK
 function loadFirebaseCredentials() {
   try {
-  const credentials = JSON.parse(process.env.FIREBASE_CREDENTIALS);
-  admin.initializeApp({
-    credential: admin.credential.cert(credentials),
-  });
-} catch (error) {
-  console.error('Error initializing Firebase:', error.message, error.stack);
-  process.exit(1);
-}}
+    const credentials = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+    admin.initializeApp({
+      credential: admin.credential.cert(credentials),
+    });
+  } catch (error) {
+    console.error('Error initializing Firebase:', error.message, error.stack);
+    process.exit(1);
+  }
+}
 loadFirebaseCredentials();
+
+// Firestore collections
+const db = admin.firestore();
+const otpCollection = db.collection('truetag_otps');
+const tokenCollection = db.collection('truetag_tokens');
+const userCollection = db.collection('truetag_users');
 
 // MiMSMS configuration
 const SMS_API_URL = 'https://api.mimsms.com/api/SmsSending/SMS';
@@ -56,31 +72,21 @@ const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET || 'your_refresh_t
 const HASH_SALT_ROUNDS = parseInt(process.env.HASH_SALT_ROUNDS || '10', 10);
 const OTP_TTL_MS = parseInt(process.env.OTP_TTL_MS || (5 * 60 * 1000).toString(), 10);
 const OTP_MAX_ATTEMPTS = parseInt(process.env.OTP_MAX_ATTEMPTS || '5', 10);
-const PHONE_OTP_WINDOW_MS = parseInt(process.env.PHONE_OTP_WINDOW_MS || '60000', 10);
-const PHONE_OTP_MAX_PER_WINDOW = parseInt(process.env.PHONE_OTP_MAX_PER_WINDOW || '3', 10);
-
-// Firestore collection
-const db = admin.firestore();
-const otpCollection = db.collection('truetag_otps');
-const tokenCollection = db.collection('truetag_tokens');
 
 // Helpers
 function generateOTP() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// Validate phone number format
 function validatePhoneNumber(phoneNumber) {
   const phoneRegex = /^\+?[1-9]\d{1,14}$/;
   return phoneRegex.test(phoneNumber);
 }
 
-// Normalize phone number (remove + prefix if present)
 function normalizePhoneNumber(phoneNumber) {
   return phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
 }
 
-// Opportunistic cleanup of expired OTPs (fire-and-forget)
 async function cleanupExpiredOtps(limit = 25) {
   try {
     const now = Date.now();
@@ -96,22 +102,8 @@ async function cleanupExpiredOtps(limit = 25) {
   }
 }
 
-// Simple per-phone in-memory tracker (stateless fallback) – for multi-instance, consider Firestore doc counters
-const phoneRequestCache = new Map(); // phone -> { windowStart, count }
-function allowPhoneOtpRequest(phoneNumber) {
-  const now = Date.now();
-  const rec = phoneRequestCache.get(phoneNumber);
-  if (!rec || now - rec.windowStart > PHONE_OTP_WINDOW_MS) {
-    phoneRequestCache.set(phoneNumber, { windowStart: now, count: 1 });
-    return true;
-  }
-  if (rec.count >= PHONE_OTP_MAX_PER_WINDOW) return false;
-  rec.count += 1;
-  return true;
-}
-
 // Send OTP endpoint
-app.post('/api/truetag/send-otp', async (req, res) => {
+app.post('/api/truetag/send-otp', otpLimiter, async (req, res) => {
   const { phoneNumber } = req.body;
 
   if (!phoneNumber) {
@@ -120,10 +112,6 @@ app.post('/api/truetag/send-otp', async (req, res) => {
 
   if (!validatePhoneNumber(phoneNumber)) {
     return res.status(400).json({ error: 'Invalid phone number format' });
-  }
-
-  if (!allowPhoneOtpRequest(phoneNumber)) {
-    return res.status(429).json({ error: 'Too many OTP requests. Please wait and try again.' });
   }
 
   const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
@@ -156,7 +144,7 @@ app.post('/api/truetag/send-otp', async (req, res) => {
         CampaignId: 'null',
         SenderName: SMS_SENDER_NAME,
         TransactionType: SMS_TRANSACTION_TYPE,
-  Message: `welcome to RR Kabel. your otp is ${otp}`,
+        Message: `Welcome to RR Kabel. Your OTP is ${otp}`,
       }),
     });
 
@@ -173,7 +161,7 @@ app.post('/api/truetag/send-otp', async (req, res) => {
 });
 
 // Verify OTP and login endpoint
-app.post('/api/truetag/verify-otp', async (req, res) => {
+app.post('/api/truetag/verify-otp', otpLimiter, async (req, res) => {
   const { phoneNumber, otp, sessionId } = req.body;
 
   if (!phoneNumber || !otp || !sessionId) {
@@ -201,10 +189,11 @@ app.post('/api/truetag/verify-otp', async (req, res) => {
       return res.status(400).json({ error: 'Invalid or expired OTP' });
     }
 
-    // success
+    // OTP verified, delete OTP doc
     await otpCollection.doc(sessionId).delete();
     cleanupExpiredOtps().catch(() => {});
 
+    // Generate JWT and refresh token
     const jwtPayload = { phoneNumber };
     const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '30d' });
     const refreshToken = jwt.sign(jwtPayload, REFRESH_TOKEN_SECRET, { expiresIn: '90d' });
@@ -213,21 +202,18 @@ app.post('/api/truetag/verify-otp', async (req, res) => {
     const tokenHash = await bcrypt.hash(token, HASH_SALT_ROUNDS);
     const refreshTokenHash = await bcrypt.hash(refreshToken, HASH_SALT_ROUNDS);
 
+    // Store tokens
     await tokenCollection.doc(phoneNumber).set({
       tokenHash,
       refreshTokenHash,
       createdAt: Date.now(),
     });
 
-    // Ensure user profile exists (minimal fields)
-  const userQuery = await db.collection('truetag_users')
-      .where('phone_number', '==', phoneNumber)
-      .limit(1)
-      .get();
-
+    // Ensure user profile exists
+    const userQuery = await userCollection.where('phone_number', '==', phoneNumber).limit(1).get();
     let profile;
     if (userQuery.empty) {
-  const docRef = await db.collection('truetag_users').add({
+      const docRef = await userCollection.add({
         phone_number: phoneNumber,
         name: '',
         email: '',
@@ -241,15 +227,63 @@ app.post('/api/truetag/verify-otp', async (req, res) => {
       profile = { name: userData.name || '', email: userData.email || '', image_url: userData.image_url || '', address: userData.address || '' };
     }
 
-  logger.info({ phoneNumber }, 'OTP verified, tokens issued (truetag)');
-    res.status(200).json({ jwt: token, refreshToken, profile });
+    // Create or update Firebase Auth user
+    const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
+    await admin.auth().getUser(normalizedPhoneNumber).catch(async (error) => {
+      if (error.code === 'auth/user-not-found') {
+        await admin.auth().createUser({ uid: normalizedPhoneNumber });
+      } else {
+        throw error;
+      }
+    });
+
+    // Generate Firebase custom token
+    const firebaseToken = await admin.auth().createCustomToken(normalizedPhoneNumber);
+
+    logger.info({ phoneNumber }, 'OTP verified, tokens issued');
+    res.status(200).json({ jwt: token, refreshToken, firebaseToken, profile });
   } catch (error) {
     logger.error({ err: error }, 'Verify OTP failure');
     res.status(500).json({ error: `OTP verification failed: ${error.message}` });
   }
 });
 
-// Auth middleware verifying JWT AND hashed token presence
+// Firebase custom token endpoint
+app.post('/api/truetag/firebase-token', async (req, res) => {
+  const { phoneNumber } = req.body;
+
+  if (!phoneNumber) {
+    return res.status(400).json({ error: 'Phone number required' });
+  }
+
+  if (!validatePhoneNumber(phoneNumber)) {
+    return res.status(400).json({ error: 'Invalid phone number format' });
+  }
+
+  try {
+    const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
+    const uid = normalizedPhoneNumber;
+
+    // Ensure user exists in Firebase Auth
+    await admin.auth().getUser(uid).catch(async (error) => {
+      if (error.code === 'auth/user-not-found') {
+        await admin.auth().createUser({ uid });
+      } else {
+        throw error;
+      }
+    });
+
+    // Generate custom token
+    const firebaseToken = await admin.auth().createCustomToken(uid);
+    logger.info({ phoneNumber }, 'Firebase custom token generated');
+    res.status(200).json({ token: firebaseToken });
+  } catch (error) {
+    logger.error({ err: error }, 'Firebase token generation failure');
+    res.status(500).json({ error: `Failed to generate Firebase token: ${error.message}` });
+  }
+});
+
+// Auth middleware
 async function authMiddleware(req, res, next) {
   try {
     const authHeader = req.headers.authorization || '';
@@ -267,22 +301,32 @@ async function authMiddleware(req, res, next) {
     req.user = { phoneNumber: decoded.phoneNumber };
     next();
   } catch (e) {
+    logger.error({ err: e }, 'Auth middleware failure');
     return res.status(401).json({ error: 'Unauthorized' });
   }
 }
 
-// Protected profile endpoint
+// Protected profile endpoint (fixed duplicate)
 app.get('/api/truetag/profile', authMiddleware, async (req, res) => {
   try {
     const phoneNumber = req.user.phoneNumber;
-  const userSnap = await db.collection('truetag_users').where('phone_number', '==', phoneNumber).limit(1).get();
+    const userSnap = await userCollection.where('phone_number', '==', phoneNumber).limit(1).get();
     if (userSnap.empty) {
       return res.status(404).json({ error: 'Profile not found' });
     }
     const doc = userSnap.docs[0];
     const data = doc.data();
-    res.status(200).json({ profile: { name: data.name || '', email: data.email || '', image_url: data.image_url || '', address: data.address || '' } });
+    res.status(200).json({
+      profile: {
+        name: data.name || '',
+        email: data.email || '',
+        image_url: data.image_url || '',
+        address: data.address || '',
+        phone_number: data.phone_number || '',
+      }
+    });
   } catch (e) {
+    logger.error({ err: e }, 'Profile fetch failure');
     res.status(500).json({ error: 'Failed to fetch profile' });
   }
 });
@@ -318,37 +362,11 @@ app.post('/api/truetag/refresh-token', async (req, res) => {
 
     res.status(200).json({ jwt: newToken });
   } catch (error) {
+    logger.error({ err: error }, 'Refresh token failure');
     res.status(401).json({ error: `Invalid or expired refresh token: ${error.message}` });
   }
 });
-// GET /api/truetag/profile
-app.get('/api/truetag/profile', authMiddleware, async (req, res) => {
-  try {
-    const phoneNumber = req.user.phoneNumber;
-    const userQuery = await db.collection('truetag_users')
-      .where('phone_number', '==', phoneNumber)
-      .limit(1)
-      .get();
 
-    if (userQuery.empty) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const userData = userQuery.docs[0].data();
-    res.status(200).json({
-      profile: {
-        name: userData.name || '',
-        email: userData.email || '',
-        address: userData.address || '',
-        phone_number: userData.phone_number || '',
-        image_url: userData.image_url || '',
-      }
-    });
-  } catch (error) {
-    logger.error({ err: error }, 'Failed to fetch profile');
-    res.status(500).json({ error: `Failed to fetch profile: ${error.message}` });
-  }
-});
 // Logout endpoint
 app.post('/api/truetag/logout', async (req, res) => {
   const { phoneNumber } = req.body;
@@ -364,6 +382,7 @@ app.post('/api/truetag/logout', async (req, res) => {
     }
     res.status(200).json({ message: 'Logged out successfully' });
   } catch (error) {
+    logger.error({ err: e }, 'Logout failure');
     res.status(500).json({ error: `Failed to log out: ${error.message}` });
   }
 });
